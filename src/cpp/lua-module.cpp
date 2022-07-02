@@ -1,3 +1,4 @@
+#include "shutdown.h"
 #include "threading.h"
 #include "shared-table.h"
 #include "garbage-collector.h"
@@ -58,6 +59,8 @@ sol::table createThreadRunner(sol::this_state state, const sol::stack_object& ob
             << "bad argument #1 to 'effil.thread' (function expected, got "
             << luaTypename(obj) << ")";
 
+	REQUIRE(!SHUTDOWN.load(std::memory_order_acquire)) << "The Effil runtime has been shut down";
+
     auto lua = sol::state_view(state);
     return sol::make_object(lua, GC::instance().create<ThreadRunner>(
         lua["package"]["path"],
@@ -82,6 +85,8 @@ int luaopen_effil(lua_State* L) {
 
     const sol::table  gcApi     = GC::exportAPI(lua);
     const sol::object gLuaTable = sol::make_object(lua, globalTable);
+
+	Shutdown::register_cookie(L);
 
     const auto luaIndex = [gcApi, gLuaTable](
             const sol::stack_object& obj, const std::string& key) -> sol::object

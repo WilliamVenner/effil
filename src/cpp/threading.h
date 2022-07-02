@@ -122,6 +122,7 @@ private:
 
 private:
     static void runThread(Thread, Function, effil::StoredArray);
+    static void runThreadImpl(Thread, Function, effil::StoredArray);
 };
 
 } // effil

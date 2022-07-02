@@ -4,6 +4,7 @@
 #include "notifier.h"
 #include "spin-mutex.h"
 #include "utils.h"
+#include "shutdown.h"
 
 #include <thread>
 #include <sstream>
@@ -56,27 +57,28 @@ const lua_CFunction luaErrorHandlerPtr = luaErrorHandler;
 
 void luaHook(lua_State*, lua_Debug*) {
     assert(thisThreadHandle);
-    switch (thisThreadHandle->command()) {
-        case Command::Run:
-            break;
-        case Command::Cancel:
-            thisThreadHandle->changeStatus(Status::Canceled);
-            throw LuaHookStopException();
-        case Command::Pause: {
-            thisThreadHandle->changeStatus(Status::Paused);
-            Command cmd;
-            do {
-                cmd = thisThreadHandle->waitForCommandChange(NO_TIMEOUT);
-            } while(cmd != Command::Run && cmd != Command::Cancel);
-            if (cmd == Command::Run) {
-                thisThreadHandle->changeStatus(Status::Running);
-            } else {
-                thisThreadHandle->changeStatus(Status::Canceled);
-                throw LuaHookStopException();
+    if (!Shutdown::requested()) {
+        switch (thisThreadHandle->command()) {
+            case Command::Run:
+                return;
+            case Command::Pause: {
+                thisThreadHandle->changeStatus(Status::Paused);
+                Command cmd;
+                do {
+                    cmd = thisThreadHandle->waitForCommandChange(NO_TIMEOUT);
+                } while(cmd != Command::Run && cmd != Command::Cancel);
+                if (cmd == Command::Run) {
+                    thisThreadHandle->changeStatus(Status::Running);
+                } else {
+                    thisThreadHandle->changeStatus(Status::Canceled);
+                    throw LuaHookStopException();
+                }
+                return;
             }
-            break;
         }
     }
+    thisThreadHandle->changeStatus(Status::Canceled);
+    throw LuaHookStopException();
 }
 
 } // namespace
@@ -96,7 +98,7 @@ ScopedSetInterruptable::~ScopedSetInterruptable() {
 }
 
 void interruptionPoint() {
-    if (thisThreadHandle && thisThreadHandle->command() == Command::Cancel)
+    if (thisThreadHandle && (thisThreadHandle->command() == Command::Cancel || Shutdown::requested()))
     {
         thisThreadHandle->changeStatus(Status::Canceled);
         throw LuaHookStopException();
@@ -167,9 +169,9 @@ void ThreadHandle::changeStatus(Status stat) {
         completionNotifier_.notify();
 }
 
-void Thread::runThread(Thread thread,
-               Function function,
-               effil::StoredArray arguments) {
+void Thread::runThreadImpl(Thread thread,
+    Function function,
+    effil::StoredArray arguments) {
     thisThreadHandle = thread.ctx_.get();
     assert(thisThreadHandle != nullptr);
 
@@ -220,9 +222,17 @@ void Thread::runThread(Thread thread,
         auto& returns = thread.ctx_->result();
         returns.insert(returns.begin(),
                 { createStoredObject("failed"),
-                  createStoredObject(err.what()) });
+                createStoredObject(err.what()) });
         thread.ctx_->changeStatus(Status::Failed);
     }
+}
+
+void Thread::runThread(Thread thread,
+               Function function,
+               effil::StoredArray arguments) {
+    Shutdown::threadStart();
+    runThreadImpl(thread, function, arguments);
+    Shutdown::threadFinish();
 }
 
 void Thread::initialize(
